@@ -1,0 +1,4 @@
+This is a test file for the Data Guardian secure file sharing verification.
+Content should be viewable in the preview modal.
+1234567890
+Confidential Data.

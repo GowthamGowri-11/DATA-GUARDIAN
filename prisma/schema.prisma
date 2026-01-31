@@ -1,0 +1,90 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Stores encrypted user data - NO READABLE PII
+model UserData {
+  id            String   @id @default(cuid())
+  encryptedData String   // AES-256-GCM encrypted JSON blob
+  dataHash      String   // SHA-256 hash for integrity verification
+  createdAt     DateTime @default(now())
+  
+  // Relation to SecureLink
+  secureLink SecureLink?
+}
+
+// Secure link for sharing data
+model SecureLink {
+  id            String   @id @default(cuid())
+  token         String   @unique  // Share token (UUID)
+  ownerToken    String   @unique  // Owner token for kill switch
+  otpHash       String            // bcrypt hash of OTP
+  expiresAt     DateTime          // Link expiry time
+  isUsed        Boolean  @default(false)  // OTP verified flag
+  isRevoked     Boolean  @default(false)  // Kill switch flag
+  createdAt     DateTime @default(now())
+  
+  // Security Features
+  failedAttempts Int      @default(0)       // Track invalid OTP attempts
+  lockedAt       DateTime?                  // If set, link is permanently locked
+  deviceHash     String?                    // Bind to specific browser/device
+  
+  // V2.1 Additions - Access Control & Transparency
+  purpose           String?   // Share purpose category (VERIFICATION, REVIEW, AUDIT, etc.)
+  purposeDetail     String?   // Optional custom purpose description (max 200 chars)
+  notificationEmail String?   // Owner's email for access notifications
+  
+  // Anti-Phishing: OTP Tracking
+  otpFirstAttemptAt DateTime?  // When first OTP attempt occurred (5-min window starts)
+  otpVerifiedAt     DateTime?  // When OTP was successfully verified (single-use enforcement)
+  
+  // Relation to UserData
+  userId   String   @unique
+  userData UserData @relation(fields: [userId], references: [id], onDelete: Cascade)
+  files    UserFile[]
+  
+  // Audit logs for this link
+  auditLogs AuditLog[]
+  
+  @@index([token])
+  @@index([ownerToken])
+  @@index([expiresAt])
+}
+
+model UserFile {
+  id               String     @id @default(cuid())
+  fileName         String
+  fileType         String
+  fileSize         Int
+  encryptedContent Bytes
+  iv               String
+  authTag          String
+  secureLinkId     String
+  secureLink       SecureLink @relation(fields: [secureLinkId], references: [id], onDelete: Cascade)
+  createdAt        DateTime   @default(now())
+
+  @@index([secureLinkId])
+}
+
+// Minimal audit trail - timestamps only, NO PII
+model AuditLog {
+  id        String   @id @default(cuid())
+  action    String   // V2: 'CREATED' | 'ACCESSED' | 'REVOKED' | 'EXPIRED' | 'CLEANUP' | 'LOCKED' | 'DENIED'
+                       // V2.1: + 'NOTIFIED' | 'SESSION_END' | 'PREVIEW_RESTRICTED'
+  timestamp DateTime @default(now())
+  reason    String?  // Privacy-safe reason (e.g., "Max attempts exceeded")
+  metadata  Json?    // Non-PII metadata (e.g., {"sessionDuration": 120, "purpose": "AUDIT", "restrictionType": "excel_rows"})
+  
+  // Relation to SecureLink (optional - link may be deleted)
+  linkId     String?
+  secureLink SecureLink? @relation(fields: [linkId], references: [id], onDelete: SetNull)
+  
+  @@index([linkId])
+  @@index([timestamp])
+  @@index([action])
+}

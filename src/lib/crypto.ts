@@ -1,0 +1,213 @@
+import { v4 as uuidv4 } from 'uuid';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
+
+// ============================================
+// TOKEN & OTP UTILITIES
+// ============================================
+
+/**
+ * Generates a cryptographically secure token using UUID v4
+ */
+export function generateSecureToken(): string {
+    return uuidv4();
+}
+
+/**
+ * Generates a 6-digit OTP using crypto for better randomness
+ */
+export function generateOTP(): string {
+    const buffer = crypto.randomBytes(4);
+    const num = buffer.readUInt32BE(0);
+    const otp = (num % 900000) + 100000;
+    return otp.toString();
+}
+
+/**
+ * Hashes an OTP using bcrypt
+ */
+export async function hashOTP(otp: string): Promise<string> {
+    const saltRounds = 12;
+    return bcrypt.hash(otp, saltRounds);
+}
+
+/**
+ * Verifies an OTP against its hash (constant-time comparison via bcrypt)
+ */
+export async function verifyOTPHash(otp: string, hash: string): Promise<boolean> {
+    return bcrypt.compare(otp, hash);
+}
+
+/**
+ * Calculates expiry timestamp from minutes
+ */
+export function calculateExpiry(minutes: number): Date {
+    const now = new Date();
+    return new Date(now.getTime() + minutes * 60 * 1000);
+}
+
+// ============================================
+// AES-256-GCM ENCRYPTION UTILITIES
+// ============================================
+
+const ALGORITHM = 'aes-256-gcm';
+const IV_LENGTH = 16; // 128 bits
+const AUTH_TAG_LENGTH = 16; // 128 bits
+const KEY_LENGTH = 32; // 256 bits
+
+/**
+ * Generates a new 256-bit encryption key
+ * Store this securely in environment variables
+ */
+export function generateEncryptionKey(): string {
+    return crypto.randomBytes(KEY_LENGTH).toString('hex');
+}
+
+/**
+ * Gets the encryption key from environment
+ * Throws if not configured
+ */
+function getEncryptionKey(): Buffer {
+    const keyHex = process.env.ENCRYPTION_KEY;
+    if (!keyHex) {
+        throw new Error('ENCRYPTION_KEY not configured in environment variables');
+    }
+    if (keyHex.length !== 64) {
+        throw new Error('ENCRYPTION_KEY must be 64 hex characters (256 bits)');
+    }
+    return Buffer.from(keyHex, 'hex');
+}
+
+/**
+ * Encrypts data using AES-256-GCM
+ * 
+ * Security features:
+ * - Unique IV for each encryption (no pattern leakage)
+ * - Authentication tag (detects tampering)
+ * - 256-bit key strength
+ * 
+ * @param data - Object to encrypt
+ * @returns Encrypted string in format: iv:authTag:ciphertext (all hex encoded)
+ */
+export function encryptData(data: object): string {
+    const key = getEncryptionKey();
+    const iv = crypto.randomBytes(IV_LENGTH);
+
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+    });
+
+    const plaintext = JSON.stringify(data);
+    let ciphertext = cipher.update(plaintext, 'utf8', 'hex');
+    ciphertext += cipher.final('hex');
+
+    const authTag = cipher.getAuthTag();
+
+    // Format: iv:authTag:ciphertext
+    return `${iv.toString('hex')}:${authTag.toString('hex')}:${ciphertext}`;
+}
+
+/**
+ * Decrypts data encrypted with encryptData
+ * 
+ * @param encryptedString - String in format iv:authTag:ciphertext
+ * @returns Decrypted object
+ * @throws Error if decryption fails (wrong key, tampered data, etc.)
+ */
+export function decryptData<T = object>(encryptedString: string): T {
+    const key = getEncryptionKey();
+
+    const parts = encryptedString.split(':');
+    if (parts.length !== 3) {
+        throw new Error('Invalid encrypted data format');
+    }
+
+    const [ivHex, authTagHex, ciphertext] = parts;
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+
+    if (iv.length !== IV_LENGTH) {
+        throw new Error('Invalid IV length');
+    }
+    if (authTag.length !== AUTH_TAG_LENGTH) {
+        throw new Error('Invalid auth tag length');
+    }
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+    });
+    decipher.setAuthTag(authTag);
+
+    let plaintext = decipher.update(ciphertext, 'hex', 'utf8');
+    plaintext += decipher.final('utf8');
+
+    return JSON.parse(plaintext) as T;
+}
+
+/**
+ * Encrypts raw binary data (Buffer) for file storage
+ */
+export function encryptBuffer(buffer: Buffer): { iv: string; authTag: string; encryptedContent: Buffer } {
+    const key = getEncryptionKey();
+    const iv = crypto.randomBytes(IV_LENGTH);
+
+    const cipher = crypto.createCipheriv(ALGORITHM, key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+    });
+
+    const encryptedContent = Buffer.concat([
+        cipher.update(buffer),
+        cipher.final(),
+    ]);
+
+    const authTag = cipher.getAuthTag();
+
+    return {
+        iv: iv.toString('hex'),
+        authTag: authTag.toString('hex'),
+        encryptedContent,
+    };
+}
+
+/**
+ * Decrypts raw binary data
+ */
+export function decryptBuffer(encryptedContent: Buffer, ivHex: string, authTagHex: string): Buffer {
+    const key = getEncryptionKey();
+    const iv = Buffer.from(ivHex, 'hex');
+    const authTag = Buffer.from(authTagHex, 'hex');
+
+    const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
+        authTagLength: AUTH_TAG_LENGTH,
+    });
+    decipher.setAuthTag(authTag);
+
+    return Buffer.concat([
+        decipher.update(encryptedContent),
+        decipher.final(),
+    ]);
+}
+
+/**
+ * Generates a SHA-256 hash of data for integrity checking
+ * This hash is stored alongside encrypted data to verify integrity
+ */
+export function generateDataHash(data: object): string {
+    const json = JSON.stringify(data);
+    return crypto.createHash('sha256').update(json).digest('hex');
+}
+
+/**
+ * Generates a unique session ID for Redis sessions
+ */
+export function generateSessionId(): string {
+    return crypto.randomBytes(32).toString('hex');
+}
+
+/**
+ * Generates an owner token for kill switch functionality
+ * This is separate from the share token and only given to the data owner
+ */
+export function generateOwnerToken(): string {
+    return crypto.randomBytes(24).toString('base64url');
+}
