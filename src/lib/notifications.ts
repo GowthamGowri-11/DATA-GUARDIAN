@@ -12,10 +12,12 @@ import { prisma } from './prisma';
 // ============================================
 
 export type NotificationEvent =
-    | 'ACCESS'       // Link was accessed (OTP verified)
-    | 'SESSION_END'  // Data viewing session ended
-    | 'EXPIRED'      // Link expired automatically
-    | 'REVOKED';     // Link manually revoked by owner
+    | 'ACCESS'           // Link was accessed (OTP verified)
+    | 'SESSION_END'      // Data viewing session ended
+    | 'EXPIRED'          // Link expired automatically
+    | 'REVOKED'          // Link manually revoked by owner
+    | 'DEVICE_MISMATCH'  // Anti-phishing: Access from different device
+    | 'FAILED_ATTEMPTS'; // Anti-phishing: Multiple OTP failures
 
 interface NotificationPayload {
     email: string;
@@ -26,6 +28,7 @@ interface NotificationPayload {
         sessionDuration?: number;  // in seconds
         purpose?: string;
         expiryTime?: Date;
+        failedAttempts?: number;   // for FAILED_ATTEMPTS alerts
     };
 }
 
@@ -68,16 +71,31 @@ function createEmailTemplate(payload: NotificationPayload): { subject: string; h
             break;
 
         case 'EXPIRED':
-            subject = '🔒 Data Guardian: Link Expired';
+            subject = ' Data Guardian: Link Expired';
             heading = 'Your Secure Link Has Expired';
             message = `Your shared data link expired automatically at ${formattedTime}. All data has been securely deleted.`;
             iconColor = '#6b7280'; // gray
             break;
 
         case 'REVOKED':
-            subject = '🚫 Data Guardian: Link Revoked';
+            subject = 'Data Guardian: Link Revoked';
             heading = 'Link Successfully Revoked';
             message = `Your shared link was revoked at ${formattedTime}. Access is now permanently blocked.`;
+            iconColor = '#ef4444'; // red
+            break;
+
+        case 'DEVICE_MISMATCH':
+            subject = '⚠️ Data Guardian: Suspicious Access Attempt';
+            heading = 'Device Mismatch Detected';
+            message = `Someone attempted to access your secure link from a different device/browser at ${formattedTime}. Access was DENIED for security.`;
+            iconColor = '#f59e0b'; // amber/warning
+            break;
+
+        case 'FAILED_ATTEMPTS':
+            subject = '🚨 Data Guardian: Multiple Failed Attempts';
+            heading = 'Multiple OTP Failures Detected';
+            const attempts = metadata?.failedAttempts || 'multiple';
+            message = `${attempts} failed OTP verification attempts were detected on your secure link at ${formattedTime}. This may indicate a brute-force attack.`;
             iconColor = '#ef4444'; // red
             break;
     }
@@ -270,6 +288,40 @@ export async function notifyLinkRevoked(
         event: 'REVOKED',
         tokenId,
         timestamp: new Date()
+    });
+}
+
+/**
+ * Helper: Send device mismatch alert (Anti-Phishing)
+ * Notifies owner when someone tries to access from a different device
+ */
+export async function notifyDeviceMismatch(
+    email: string,
+    tokenId: string
+): Promise<void> {
+    await sendAccessNotification({
+        email,
+        event: 'DEVICE_MISMATCH',
+        tokenId,
+        timestamp: new Date()
+    });
+}
+
+/**
+ * Helper: Send failed attempts alert (Anti-Phishing)
+ * Notifies owner of multiple OTP verification failures
+ */
+export async function notifyFailedAttempts(
+    email: string,
+    tokenId: string,
+    failedAttempts: number
+): Promise<void> {
+    await sendAccessNotification({
+        email,
+        event: 'FAILED_ATTEMPTS',
+        tokenId,
+        timestamp: new Date(),
+        metadata: { failedAttempts }
     });
 }
 

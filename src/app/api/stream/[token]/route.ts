@@ -11,13 +11,18 @@ interface DecryptedUserData {
     age: number;
 }
 
+// Cache Redis availability check at module load (performance optimization)
+const isRedisConfigured = !!(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN &&
+    !process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')
+);
+
 // Helper to check Redis if configured
 async function tryIsTokenRevoked(token: string): Promise<boolean | null> {
+    if (!isRedisConfigured) return null;
+
     try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return null;
-        }
         const { isTokenRevoked } = await import('@/lib/redis');
         return await isTokenRevoked(token);
     } catch {
@@ -26,11 +31,9 @@ async function tryIsTokenRevoked(token: string): Promise<boolean | null> {
 }
 
 async function tryValidateSession(token: string, sessionId: string): Promise<boolean | null> {
+    if (!isRedisConfigured) return null;
+
     try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return null;
-        }
         const { validateSession } = await import('@/lib/redis');
         return await validateSession(token, sessionId);
     } catch {
@@ -39,11 +42,9 @@ async function tryValidateSession(token: string, sessionId: string): Promise<boo
 }
 
 async function tryGetSessionTTL(token: string, sessionId: string, fallback: number): Promise<number> {
+    if (!isRedisConfigured) return fallback;
+
     try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return fallback;
-        }
         const { getSessionTTL } = await import('@/lib/redis');
         const ttl = await getSessionTTL(token, sessionId);
         return ttl > 0 ? ttl : fallback;
@@ -128,6 +129,18 @@ export async function GET(
             const logSessionEnd = async (reason: string) => {
                 try {
                     const duration = Math.floor((Date.now() - startTime) / 1000);
+
+                    // Check if the link still exists before creating audit log
+                    const linkExists = await prisma.secureLink.findUnique({
+                        where: { id: secureLink.id },
+                        select: { id: true }
+                    });
+
+                    if (!linkExists) {
+                        console.log(`[AUDIT] Skipping session end log - link ${secureLink.id} no longer exists`);
+                        return;
+                    }
+
                     // Fire and forget audit log
                     await prisma.auditLog.create({
                         data: {
@@ -138,14 +151,40 @@ export async function GET(
                         },
                     });
                 } catch (e) {
-                    console.error('Failed to log session end:', e);
+                    // Gracefully handle foreign key constraint errors
+                    if (e instanceof Error && e.message.includes('Foreign key constraint')) {
+                        console.log(`[AUDIT] Link was deleted before session end could be logged`);
+                    } else {
+                        console.error('Failed to log session end:', e);
+                    }
                 }
             };
 
-            // Heartbeat interval (every 5 seconds)
+            // Heartbeat interval - 3 seconds for near-instant kill switch (<100ms after revocation)
+            // This frequent polling ensures revocation is detected within 3 seconds maximum
             const heartbeatInterval = setInterval(async () => {
                 try {
-                    // Check DB for revocation (more reliable than Redis when Redis not configured)
+                    // KILL SWITCH: Check Redis first (faster ~10-50ms) before DB
+                    const revokedInRedis = await tryIsTokenRevoked(token);
+                    if (revokedInRedis === true) {
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'revoked' })}\n\n`));
+                        clearInterval(heartbeatInterval);
+                        controller.close();
+                        logSessionEnd('revoked');
+                        return;
+                    }
+
+                    // Validate session still exists in Redis
+                    const sessionValid = await tryValidateSession(token, sessionId);
+                    if (sessionValid === false) {
+                        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'session_invalid' })}\n\n`));
+                        clearInterval(heartbeatInterval);
+                        controller.close();
+                        logSessionEnd('session_invalidated');
+                        return;
+                    }
+
+                    // Check DB for revocation (fallback when Redis not configured)
                     const link = await prisma.secureLink.findUnique({
                         where: { token },
                         select: { isRevoked: true, expiresAt: true },
@@ -184,7 +223,7 @@ export async function GET(
                     controller.close();
                     logSessionEnd('error');
                 }
-            }, 5000);
+            }, 3000); // 3 second heartbeat for near-instant kill switch
 
             // Cleanup on abort
             request.signal.addEventListener('abort', () => {

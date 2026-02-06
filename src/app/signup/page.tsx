@@ -146,15 +146,31 @@ export default function SignupPage() {
     const copyToClipboard = async () => {
         if (!generatedLink) return;
         try {
-            await navigator.clipboard.writeText(generatedLink);
+            // Try modern clipboard API first (requires HTTPS or localhost)
+            if (navigator.clipboard && window.isSecureContext) {
+                await navigator.clipboard.writeText(generatedLink);
+            } else {
+                // Fallback for HTTP: use textarea + execCommand
+                const textArea = document.createElement('textarea');
+                textArea.value = generatedLink;
+                textArea.style.position = 'fixed';
+                textArea.style.left = '-999999px';
+                textArea.style.top = '-999999px';
+                document.body.appendChild(textArea);
+                textArea.focus();
+                textArea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textArea);
+            }
             setStatus({ message: 'Link copied!', type: 'success' });
             setTimeout(() => {
                 if (otp) {
                     setStatus({ message: 'Link generated successfully! OTP shown below.', type: 'success' });
                 }
             }, 1500);
-        } catch {
-            setStatus({ message: 'Failed to copy', type: 'error' });
+        } catch (err) {
+            console.error('Copy failed:', err);
+            setStatus({ message: 'Failed to copy. Please select and copy manually.', type: 'error' });
         }
     };
 

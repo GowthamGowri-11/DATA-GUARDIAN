@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server';
 import { cleanupExpiredData } from '@/actions/cleanup';
 
+export const dynamic = 'force-dynamic'; // Prevent static generation during build
+
 // This endpoint can be called by a cron job service (e.g., Vercel Cron, external cron)
 // Add authorization in production
 

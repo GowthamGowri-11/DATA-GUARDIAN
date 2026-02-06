@@ -9,39 +9,36 @@ import { notifyLinkAccessed } from '@/lib/notifications';
 import { checkOTPRateLimit, extractClientIP, formatRateLimitError } from '@/lib/rate-limit';
 
 // Anti-Phishing Configuration
-const OTP_VERIFY_WINDOW_MINUTES = 5;  // OTP valid for 5 minutes after first attempt
+const OTP_VERIFY_WINDOW_MINUTES = 3;  // OTP valid for 3 minutes (reduced from 5 for tighter security)
+
+// Cache Redis availability check at module load (performance optimization)
+const isRedisConfigured = !!(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN &&
+    !process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')
+);
 
 // Conditionally import Redis functions only if configured
 async function tryCreateSession(token: string, sessionId: string, ttlSeconds: number): Promise<boolean> {
-    try {
-        // Check if Redis is configured
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            console.log('[INFO] Redis not configured, skipping session creation');
-            return false;
-        }
+    if (!isRedisConfigured) return false;
 
+    try {
         const { createSession } = await import('@/lib/redis');
         await createSession(token, sessionId, ttlSeconds);
         return true;
-    } catch (error) {
-        console.error('Redis session creation failed:', error instanceof Error ? error.message : 'Unknown');
+    } catch {
         return false;
     }
 }
 
 async function tryCheckRevoked(token: string): Promise<boolean | null> {
-    try {
-        // Check if Redis is configured
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return null; // Redis not configured, can't check
-        }
+    if (!isRedisConfigured) return null;
 
+    try {
         const { isTokenRevoked } = await import('@/lib/redis');
         return await isTokenRevoked(token);
     } catch {
-        return null; // Redis unavailable, fall back to DB check
+        return null;
     }
 }
 
@@ -239,6 +236,14 @@ export async function verifyOTP(input: OTPVerifyInput): Promise<VerifyOTPResult>
                 }
             });
 
+            // ANTI-PHISHING: Alert owner of suspicious access (fire-and-forget)
+            if (secureLink.notificationEmail) {
+                import('@/lib/notifications').then(({ notifyDeviceMismatch }) => {
+                    notifyDeviceMismatch(secureLink.notificationEmail!, secureLink.id)
+                        .catch(() => { }); // Silent fail
+                });
+            }
+
             return {
                 success: false,
                 error: 'Access denied: Link is bound to a different device/browser.',
@@ -293,11 +298,27 @@ export async function verifyOTP(input: OTPVerifyInput): Promise<VerifyOTPResult>
             });
 
             if (isLocked) {
+                // ANTI-PHISHING: Alert owner about link being locked (fire-and-forget)
+                if (secureLink.notificationEmail) {
+                    import('@/lib/notifications').then(({ notifyFailedAttempts }) => {
+                        notifyFailedAttempts(secureLink.notificationEmail!, secureLink.id, newAttempts)
+                            .catch(() => { }); // Silent fail
+                    });
+                }
+
                 return {
                     success: false,
                     error: 'Maximum attempts exceeded. This link is now permanently locked.',
                     errorType: 'LOCKED',
                 };
+            }
+
+            // ANTI-PHISHING: Alert owner on 2+ failed attempts (early warning)
+            if (newAttempts >= 2 && secureLink.notificationEmail) {
+                import('@/lib/notifications').then(({ notifyFailedAttempts }) => {
+                    notifyFailedAttempts(secureLink.notificationEmail!, secureLink.id, newAttempts)
+                        .catch(() => { }); // Silent fail
+                });
             }
 
             const attemptsLeft = 3 - newAttempts;

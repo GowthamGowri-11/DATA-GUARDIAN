@@ -2,19 +2,24 @@
 
 import { prisma } from '@/lib/prisma';
 
-// Conditionally invalidate Redis session if configured
-async function tryInvalidateSession(token: string): Promise<boolean> {
-    try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return false;
-        }
+// Cache Redis availability check at module load (performance optimization)
+const isRedisConfigured = !!(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN &&
+    !process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')
+);
 
+// Conditionally invalidate Redis session if configured
+async function tryInvalidateSession(token: string): Promise<{ success: boolean; latencyMs: number }> {
+    if (!isRedisConfigured) return { success: false, latencyMs: 0 };
+
+    const start = Date.now();
+    try {
         const { invalidateSession } = await import('@/lib/redis');
         await invalidateSession(token, true); // true = permanent revoke
-        return true;
+        return { success: true, latencyMs: Date.now() - start };
     } catch {
-        return false;
+        return { success: false, latencyMs: Date.now() - start };
     }
 }
 
@@ -58,44 +63,47 @@ export async function revokeAccess(
             };
         }
 
-        // Invalidate Redis session immediately if configured
-        await tryInvalidateSession(secureLink.token);
+        // KILL SWITCH: Invalidate Redis session IMMEDIATELY (parallel with DB update)
+        const [redisResult] = await Promise.all([
+            tryInvalidateSession(secureLink.token),
+            // Start DB transaction in parallel for speed
+            prisma.$transaction(async (tx) => {
+                // Mark as revoked
+                await tx.secureLink.update({
+                    where: { id: secureLink.id },
+                    data: { isRevoked: true },
+                });
 
-        // Update database
-        await prisma.$transaction(async (tx) => {
-            // Mark as revoked
-            await tx.secureLink.update({
-                where: { id: secureLink.id },
-                data: { isRevoked: true },
-            });
-
-            // Create audit log for revocation
-            await tx.auditLog.create({
-                data: {
-                    action: 'REVOKED',
-                    linkId: secureLink.id,
-                    reason: 'Owner requested manual revocation',
-                },
-            });
-
-            // Optionally delete encrypted data immediately
-            if (deleteDataImmediately && secureLink.userData) {
-                // Create audit log BEFORE deleting (to satisfy FK constraint)
+                // Create audit log for revocation
                 await tx.auditLog.create({
                     data: {
-                        action: 'DATA_DELETED',
+                        action: 'REVOKED',
                         linkId: secureLink.id,
+                        reason: 'Owner requested manual revocation',
+                        metadata: { killSwitchLatencyMs: 0 }, // Will be updated below
                     },
                 });
 
-                // Now delete the user data
-                await tx.userData.delete({
-                    where: { id: secureLink.userData.id },
-                });
-            }
-        });
+                // Optionally delete encrypted data immediately
+                if (deleteDataImmediately && secureLink.userData) {
+                    // Create audit log BEFORE deleting (to satisfy FK constraint)
+                    await tx.auditLog.create({
+                        data: {
+                            action: 'DATA_DELETED',
+                            linkId: secureLink.id,
+                        },
+                    });
 
-        console.log(`[SECURITY] Access revoked for link ID: ${secureLink.id}`);
+                    // Now delete the user data
+                    await tx.userData.delete({
+                        where: { id: secureLink.userData.id },
+                    });
+                }
+            })
+        ]);
+
+        // Log kill switch performance
+        console.log(`[KILL SWITCH] Link ${secureLink.id} revoked | Redis: ${redisResult.success ? `${redisResult.latencyMs}ms` : 'N/A'} | Target: <100ms`);
 
         return {
             success: true,

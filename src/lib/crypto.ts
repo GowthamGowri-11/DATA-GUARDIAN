@@ -24,18 +24,36 @@ export function generateOTP(): string {
 }
 
 /**
- * Hashes an OTP using bcrypt
+ * Hashes an OTP using HMAC-SHA256 (fast, secure for short-lived tokens)
+ * 
+ * For 6-digit OTPs with 5-minute expiry and 3-attempt limit, HMAC is more appropriate
+ * than bcrypt because:
+ * - OTPs are short-lived (brute-force window is minimal)
+ * - We need fast verification for good UX
+ * - HMAC with a secret key provides sufficient security
  */
 export async function hashOTP(otp: string): Promise<string> {
-    const saltRounds = 12;
-    return bcrypt.hash(otp, saltRounds);
+    const secret = process.env.ENCRYPTION_KEY || 'fallback-secret';
+    return crypto.createHmac('sha256', secret).update(otp).digest('hex');
 }
 
 /**
- * Verifies an OTP against its hash (constant-time comparison via bcrypt)
+ * Verifies an OTP against its hash
+ * Supports both new HMAC hashes and legacy bcrypt hashes for backward compatibility
  */
 export async function verifyOTPHash(otp: string, hash: string): Promise<boolean> {
-    return bcrypt.compare(otp, hash);
+    // Check if it's a bcrypt hash (starts with $2a$, $2b$, or $2y$)
+    if (hash.startsWith('$2')) {
+        // Legacy bcrypt verification for existing OTPs
+        return bcrypt.compare(otp, hash);
+    }
+
+    // Fast HMAC verification for new OTPs
+    const secret = process.env.ENCRYPTION_KEY || 'fallback-secret';
+    const computedHash = crypto.createHmac('sha256', secret).update(otp).digest('hex');
+
+    // Constant-time comparison to prevent timing attacks
+    return crypto.timingSafeEqual(Buffer.from(computedHash), Buffer.from(hash));
 }
 
 /**
@@ -63,11 +81,12 @@ export function generateEncryptionKey(): string {
     return crypto.randomBytes(KEY_LENGTH).toString('hex');
 }
 
-/**
- * Gets the encryption key from environment
- * Throws if not configured
- */
+// Cache the encryption key to avoid repeated env parsing
+let _cachedKey: Buffer | null = null;
+
 function getEncryptionKey(): Buffer {
+    if (_cachedKey) return _cachedKey;
+
     const keyHex = process.env.ENCRYPTION_KEY;
     if (!keyHex) {
         throw new Error('ENCRYPTION_KEY not configured in environment variables');
@@ -75,7 +94,8 @@ function getEncryptionKey(): Buffer {
     if (keyHex.length !== 64) {
         throw new Error('ENCRYPTION_KEY must be 64 hex characters (256 bits)');
     }
-    return Buffer.from(keyHex, 'hex');
+    _cachedKey = Buffer.from(keyHex, 'hex');
+    return _cachedKey;
 }
 
 /**

@@ -5,28 +5,29 @@ import { decryptData } from '@/lib/crypto';
 import { maskEmail, maskPhone } from '@/lib/masking';
 import { cookies } from 'next/headers';
 
+// Cache Redis availability check at module load (performance optimization)
+const isRedisConfigured = !!(
+    process.env.UPSTASH_REDIS_REST_URL &&
+    process.env.UPSTASH_REDIS_REST_TOKEN &&
+    !process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')
+);
+
 // Conditionally check Redis if configured
 async function tryValidateSession(token: string, sessionId: string): Promise<boolean | null> {
-    try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return null; // Redis not configured
-        }
+    if (!isRedisConfigured) return null;
 
+    try {
         const { validateSession } = await import('@/lib/redis');
         return await validateSession(token, sessionId);
     } catch {
-        return null; // Redis unavailable
+        return null;
     }
 }
 
 async function tryCheckRevoked(token: string): Promise<boolean | null> {
-    try {
-        if (!process.env.UPSTASH_REDIS_REST_URL || !process.env.UPSTASH_REDIS_REST_TOKEN ||
-            process.env.UPSTASH_REDIS_REST_URL.includes('your-redis')) {
-            return null;
-        }
+    if (!isRedisConfigured) return null;
 
+    try {
         const { isTokenRevoked } = await import('@/lib/redis');
         return await isTokenRevoked(token);
     } catch {

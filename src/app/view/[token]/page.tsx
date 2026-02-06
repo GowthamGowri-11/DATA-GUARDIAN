@@ -134,11 +134,10 @@ export default function ViewPage({ params }: ViewPageProps) {
             if (eventSourceRef.current) {
                 eventSourceRef.current.close();
             }
-            if (revealTimeout) {
-                clearTimeout(revealTimeout);
-            }
         };
-    }, [token, fetchUserData, revealTimeout]);
+        // Note: revealTimeout cleanup is handled separately in handleHide
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [token, fetchUserData]);
 
     // Local countdown
     useEffect(() => {

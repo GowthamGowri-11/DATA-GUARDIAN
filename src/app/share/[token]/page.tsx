@@ -311,6 +311,30 @@ export default function SharePage({ params }: SharePageProps) {
                     </div>
                 </div>
 
+                {/* Anti-Phishing Warning */}
+                <div className="phishing-warning" style={{
+                    background: 'rgba(251, 191, 36, 0.1)',
+                    border: '1px solid rgba(251, 191, 36, 0.3)',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    margin: '16px 0',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '10px'
+                }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" style={{ width: '20px', height: '20px', flexShrink: 0, marginTop: '2px' }}>
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                        <line x1="12" y1="9" x2="12" y2="13" />
+                        <line x1="12" y1="17" x2="12.01" y2="17" />
+                    </svg>
+                    <div style={{ fontSize: '12px', color: '#fbbf24', lineHeight: '1.4' }}>
+                        <strong style={{ display: 'block', marginBottom: '4px' }}>⚠️ Anti-Phishing Notice</strong>
+                        We will <strong>never</strong> ask for your OTP via email, phone, or any website other than this page.
+                        <br />
+                        <span style={{ opacity: 0.8 }}>Verify you are on: <code style={{ background: 'rgba(0,0,0,0.3)', padding: '1px 4px', borderRadius: '3px' }}>{typeof window !== 'undefined' ? window.location.hostname : 'localhost'}</code></span>
+                    </div>
+                </div>
+
                 {/* Security Badge */}
                 <div className="security-badge">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
