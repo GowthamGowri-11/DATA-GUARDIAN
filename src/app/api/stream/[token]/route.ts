@@ -2,6 +2,8 @@ import { NextRequest } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import { decryptData } from '@/lib/crypto';
 
+export const dynamic = 'force-dynamic'; // Prevent static generation during build
+
 interface DecryptedUserData {
     firstName: string;
     lastName: string;
