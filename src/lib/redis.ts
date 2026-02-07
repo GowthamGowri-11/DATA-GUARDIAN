@@ -8,10 +8,12 @@ import { Redis } from '@upstash/redis';
  * Serverless Redis client for ephemeral session management
  * Uses Upstash Redis REST API for edge compatibility
  */
-const redis = new Redis({
-    url: process.env.UPSTASH_REDIS_REST_URL!,
-    token: process.env.UPSTASH_REDIS_REST_TOKEN!,
-});
+const redis = (process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN)
+    ? new Redis({
+        url: process.env.UPSTASH_REDIS_REST_URL,
+        token: process.env.UPSTASH_REDIS_REST_TOKEN,
+    })
+    : null;
 
 // Session key prefixes for organization
 const SESSION_PREFIX = 'session:';
@@ -53,6 +55,7 @@ export async function createSession(
     ttlSeconds: number,
     deviceFingerprint?: string
 ): Promise<void> {
+    if (!redis) return;
     const sessionKey = `${SESSION_PREFIX}${token}:${sessionId}`;
     const activeKey = `${ACTIVE_SESSION_PREFIX}${token}`;
 
@@ -93,6 +96,8 @@ export async function validateSession(
     token: string,
     sessionId: string
 ): Promise<boolean> {
+    if (!redis) return true; // Fail open if Redis is down/missing (handled by DB)
+
     // Check if link is revoked
     const isRevoked = await redis.exists(`${REVOKED_PREFIX}${token}`);
     if (isRevoked) {
@@ -119,6 +124,7 @@ export async function validateSession(
  * @returns Session data or null if no active session
  */
 export async function getActiveSession(token: string): Promise<SessionData | null> {
+    if (!redis) return null;
     const activeSessionId = await redis.get<string>(`${ACTIVE_SESSION_PREFIX}${token}`);
     if (!activeSessionId) {
         return null;
@@ -146,6 +152,7 @@ export async function invalidateSession(
     token: string,
     permanentRevoke: boolean = false
 ): Promise<void> {
+    if (!redis) return;
     const activeKey = `${ACTIVE_SESSION_PREFIX}${token}`;
     const activeSessionId = await redis.get<string>(activeKey);
 
@@ -174,6 +181,7 @@ export async function invalidateSession(
  * @returns true if there's an active session
  */
 export async function isSessionActive(token: string): Promise<boolean> {
+    if (!redis) return false;
     const activeKey = `${ACTIVE_SESSION_PREFIX}${token}`;
     const exists = await redis.exists(activeKey);
     return exists === 1;
@@ -186,6 +194,8 @@ export async function isSessionActive(token: string): Promise<boolean> {
  * @returns true if revoked
  */
 export async function isTokenRevoked(token: string): Promise<boolean> {
+    if (!redis) return false;
+
     const exists = await redis.exists(`${REVOKED_PREFIX}${token}`);
     return exists === 1;
 }
@@ -198,6 +208,7 @@ export async function isTokenRevoked(token: string): Promise<boolean> {
  * @returns Remaining seconds, or -1 if expired/not found
  */
 export async function getSessionTTL(token: string, sessionId: string): Promise<number> {
+    if (!redis) return -1;
     const sessionKey = `${SESSION_PREFIX}${token}:${sessionId}`;
     const ttl = await redis.ttl(sessionKey);
     return ttl;
@@ -212,6 +223,8 @@ export async function extendSession(
     sessionId: string,
     additionalSeconds: number
 ): Promise<boolean> {
+    if (!redis) return false;
+
     const sessionKey = `${SESSION_PREFIX}${token}:${sessionId}`;
     const activeKey = `${ACTIVE_SESSION_PREFIX}${token}`;
 

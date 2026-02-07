@@ -89,13 +89,20 @@ function getEncryptionKey(): Buffer {
 
     const keyHex = process.env.ENCRYPTION_KEY;
     if (!keyHex) {
-        throw new Error('ENCRYPTION_KEY not configured in environment variables');
+        console.error('[SECURITY ERROR] ENCRYPTION_KEY is not set in environment variables.');
+        throw new Error('Server configuration error: Encryption key missing.');
     }
     if (keyHex.length !== 64) {
-        throw new Error('ENCRYPTION_KEY must be 64 hex characters (256 bits)');
+        console.error('[SECURITY ERROR] ENCRYPTION_KEY must be exactly 64 hex characters.');
+        throw new Error('Server configuration error: Invalid encryption key format.');
     }
-    _cachedKey = Buffer.from(keyHex, 'hex');
-    return _cachedKey;
+    try {
+        _cachedKey = Buffer.from(keyHex, 'hex');
+        return _cachedKey;
+    } catch (e) {
+        console.error('[SECURITY ERROR] Failed to parse ENCRYPTION_KEY as hex.');
+        throw new Error('Server configuration error: Encryption key parsing failed.');
+    }
 }
 
 /**

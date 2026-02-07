@@ -71,6 +71,9 @@ COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
 
+# Ensure the app user can write to the prisma directory (for SQLite)
+RUN chown -R nextjs:nodejs /app/prisma
+
 # Switch to non-root user
 USER nextjs
 
@@ -80,5 +83,5 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-# Start the application
-CMD ["node", "server.js"]
+# Start the application - Now includes prisma migration step
+CMD npx prisma migrate deploy && node server.js
